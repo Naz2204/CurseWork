@@ -1,12 +1,16 @@
 from kivy.app import App
 from kivy.utils import platform
 from kivymd.uix.dialog import MDDialog
-
+from geopy.distance import geodesic
 import requests
+
+INFINITE = 999999999999999
 
 class GetData:
     def __init__(self):
-        self.location: list = [0, 0]
+
+        self.__location: list = [INFINITE, INFINITE]
+        self.__old_location: list = [0, 0]
 
     def run(self):
         #Request permission on Android
@@ -28,15 +32,18 @@ class GetData:
 
 
     def __get_coordinates(self, *args, **kwargs):
-        self.location[0] = kwargs['lat']
-        self.location[1] = kwargs['lon']
+        self.__old_location[0] = self.__location[0]
+        self.__old_location[1] = self.__location[1]
+
+        self.__location[0] = kwargs['lat']
+        self.__location[1] = kwargs['lon']
+
 
     def __on_auth_status(self, general_status, status_message):
         if general_status == "provider-enabled":
             print("GPS found")
         else:
-            #TODO викликати вікно з попередженням що потрібний GPS
-            pass
+            self.GPS_turned_off_popup()
 
     def GPS_turned_off_popup(self):
         dialog = MDDialog(title = "GPS Error", text = "For app functionality turn GPS on")
@@ -45,10 +52,43 @@ class GetData:
         dialog.open()
 
     def get_nearest_locality(self):
-        pass
+        latitude, longitude = self.__location
+
+        url = "http://overpass-api.de/api/interpreter"
+
+        query = f"""
+        [out:json];
+        node(around:5000,{latitude},{longitude})["place"~"city|town|village"];
+        out;
+        """
+
+        response = requests.get(url, data={"data": query})
+
+        if response.status_code == 200:
+            data = response.json()
+            places = []
+
+            for entry in data:
+                if entry["tags"]["name"]:
+                    place = {
+                        "name": entry["tags"]["name"],
+                        "distance": geodesic((latitude, longitude), (entry["lat"], entry["lon"])).meters
+                    }
+                    places.append(place)
+
+            places.sort(key=lambda distance: distance["distance"])
+
+            if places:
+                return places[0]["name"]
+            else:
+                return "No nearby cities, towns, or villages found."
+
+        else:
+            print("Overpass API error:", response.status_code, response.text)
+            return None
 
     def get_closest_fuel_station(self):
-        latitude, longitude = self.location
+        latitude, longitude = self.__location
         # Define a small bounding box around the point
         fuel_station_url = f"https://overpass-api.de/api/interpreter"
         fuel_station_query = f"""
@@ -67,7 +107,7 @@ class GetData:
         if response.status_code == 200:
             data = response.json()
             closest_station = None
-            closest_distance = 999999999999999
+            closest_distance = INFINITE
             for element in data['elements']:
                 station_coords = None
                 if element['type'] == 'way':
@@ -83,7 +123,7 @@ class GetData:
                     if distance_result["code"] == "Ok" and distance_result["routes"]["distance"]:
                         distance = distance_result["routes"]["distance"]
                     else:
-                        distance = 999999999999999
+                        distance = INFINITE
 
                     if element['name'] and distance < closest_distance:
                         closest_station = element['name']
@@ -96,12 +136,20 @@ class GetData:
             print("Overpass API error:", response.status_code, response.text)
             return None
 
+    def get_speed(self):
+        if INFINITE in self.__old_location:
+            return 0
 
-    def get_speed(self): pass
+        distance = geodesic(self.__old_location, self.__location).meters
 
+        time = 5 #in seconds
+
+        speed = (distance / time) * 3.6 # converting to km/h
+
+        return speed
 
     def get_speed_limit(self):
-        latitude, longitude = self.location
+        latitude, longitude = self.__location
         # Define a small bounding box around the point
         bbox = f"{latitude - 0.0001},{longitude - 0.0001},{latitude + 0.0001},{longitude + 0.0001}"
 
